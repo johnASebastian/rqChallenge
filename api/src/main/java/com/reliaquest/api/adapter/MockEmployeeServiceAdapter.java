@@ -1,38 +1,37 @@
 package com.reliaquest.api.adapter;
 
-import com.reliaquest.api.dto.CreateMockEmployeeInput;
-import com.reliaquest.api.dto.MockEmployee;
-import com.reliaquest.api.dto.MockEmployeeListResult;
-import com.reliaquest.api.dto.MockEmployeeResult;
+import com.reliaquest.api.dto.*;
 import com.reliaquest.api.exceptions.MockEmployeeServiceException;
-import com.reliaquest.api.exceptions.MockEmployeeServiceRequestException;
 import com.reliaquest.api.model.Employee;
 import com.reliaquest.api.model.EmployeeInput;
-import lombok.RequiredArgsConstructor;
-import org.springframework.boot.web.client.ClientHttpRequestFactorySettings;
-import org.springframework.http.HttpStatusCode;
-import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.http.*;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestTemplate;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import static org.springframework.http.HttpMethod.*;
+import static org.springframework.http.HttpStatus.*;
+
+@Slf4j
 @Service
 public class MockEmployeeServiceAdapter {
     public static final int CONNECTION_REQUEST_TIMEOUT = 5000;
-    public static final int RETRY_BACKOFF_INTERVAL = 500;
+    public static final long RETRY_BACKOFF_INTERVAL = 500L;
     private static final Integer MAX_RETRIES = 3;
-    private final RestClient restClient;
+    protected static final String BASE_URL = "http://localhost:8112/api/v1/employee";
+    public static final String ID = "/%s/";
+    private final RestTemplate restClient;
 
-    public MockEmployeeServiceAdapter(RestClient.Builder restClientBuilder) {
-        HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory();
-        requestFactory.setConnectionRequestTimeout(CONNECTION_REQUEST_TIMEOUT);
-        this.restClient = restClientBuilder
-                .requestFactory(requestFactory)
-                .baseUrl("http://localhost:8112/api/v1/employee")
-                .build();
+    @Autowired
+    public MockEmployeeServiceAdapter(RestTemplateBuilder builder) {
+        this.restClient = builder.build();
     }
 
     public List<Employee> getEmployees() {
@@ -43,111 +42,118 @@ public class MockEmployeeServiceAdapter {
         return getEmployee(id, 0);
     }
 
-    public Employee createEmployee(EmployeeInput employee)
-    {
+    public Employee createEmployee(EmployeeInput employee) {
         return createEmployee(employee, 0);
     }
 
+    public boolean deleteEmployee(String name) {
+        return deleteEmployee(name, 0);
+    }
+
     private Optional<Employee> getEmployee(String id, int tryCount) {
-        try {
-            var request =  restClient.get().uri("/{id}/", id).retrieve();
-            setupErrorHandling(request);
-            var result = request.body(MockEmployeeResult.class);
-            return Optional.ofNullable(result.getData().toEmployee());
-        } catch (MockEmployeeServiceRequestException e) {
-            if (tryCount < MAX_RETRIES)
-            {
-                return getEmployee(id, performBackoff(tryCount));
-            }
-            else
-            {
-                throw new MockEmployeeServiceException("getEmployee", e);
-            }
+        var response =  restClient.exchange(
+            String.format(BASE_URL+ID, id),
+            GET, null,
+            MockEmployeeResult.class);
+
+        if (errorHandlingRetryRequired(response, tryCount++, "getEmployee")) {
+            return getEmployee(id, tryCount);
         }
+
+        var result = response.getBody();
+        return Optional.ofNullable(result)
+                .map(MockEmployeeResult::getData)
+                .map(MockEmployee::toEmployee);
     }
 
     private Employee createEmployee(EmployeeInput employee, int tryCount) {
-        try {
-            var request =  restClient.post().body(CreateMockEmployeeInput.fromEmployeeInput(employee)).retrieve();
-            setupErrorHandling(request);
-            var result = request.body(MockEmployeeResult.class);
-            return result.getData().toEmployee();
-        } catch (MockEmployeeServiceRequestException e) {
-            if (tryCount < MAX_RETRIES)
-            {
-                return createEmployee(employee, performBackoff(tryCount));
-            }
-            else
-            {
-                throw new MockEmployeeServiceException("createEmployee", e);
-            }
+        var response =  restClient.exchange(
+                BASE_URL,
+                POST,
+                new HttpEntity<>(CreateMockEmployeeInput.fromEmployeeInput(employee)),
+                CreateMockEmployeeResult.class);
+
+        if (errorHandlingRetryRequired(response, tryCount++, "createEmployee")) {
+            return createEmployee(employee, tryCount);
         }
+        var result = response.getBody();
+        return Optional.ofNullable(result)
+                .map(CreateMockEmployeeResult::getData)
+                .map(MockEmployee::toEmployee)
+                .orElseThrow(() -> new MockEmployeeServiceException("createEmployee", "UNKNOWN ERROR"));
     }
 
+    private boolean deleteEmployee(String name, int tryCount) {
+        var response =  restClient.exchange(
+                BASE_URL,
+                DELETE,
+                new HttpEntity<>(DeleteMockEmployeeInput.builder().name(name).build()),
+                DeleteMockEmployeeResult.class);
 
-
-    private Employee deleteEmployee(String id, int tryCount) {
-        try {
-            var request =  restClient.post().body(CreateMockEmployeeInput.fromEmployeeInput(employee)).retrieve();
-            setupErrorHandling(request);
-            var result = request.body(MockEmployeeResult.class);
-            return result.getData().toEmployee();
-        } catch (MockEmployeeServiceRequestException e) {
-            if (tryCount < MAX_RETRIES)
-            {
-                return createEmployee(employee, performBackoff(tryCount));
-            }
-            else
-            {
-                throw new MockEmployeeServiceException("getEmployee", e);
-            }
+        if (errorHandlingRetryRequired(response, tryCount++, "deleteEmployee")) {
+            return deleteEmployee(name, tryCount);
         }
+        return Optional.ofNullable(response.getBody())
+                .map(DeleteMockEmployeeResult::isData)
+                .orElse(false);
     }
 
 
     private List<Employee> getEmployeeList(int tryCount) {
-        try {
-            var request = restClient.get().retrieve();
-            setupErrorHandling(request);
-            var result = request.body(MockEmployeeListResult.class);
-            return result.getData().stream().map(MockEmployee::toEmployee).collect(Collectors.toList());
-        } catch (MockEmployeeServiceRequestException e) {
-            if (tryCount < MAX_RETRIES)
-            {
-                return getEmployeeList(performBackoff(tryCount));
-            }
-            else
-            {
-                throw new RuntimeException("Error Retrieving Data from Server.", e);
-            }
+        var response =  restClient.exchange(
+                BASE_URL,
+                GET, null,
+                MockEmployeeListResult.class);
+
+        if (errorHandlingRetryRequired(response, tryCount++, "getEmployees")) {
+            return getEmployeeList(tryCount);
         }
+
+        return Optional.ofNullable(response.getBody())
+                .map(MockEmployeeListResult::getData)
+                .map(employees -> employees.stream().map(MockEmployee::toEmployee).collect(Collectors.toList()))
+                .orElse(Collections.emptyList());
     }
 
-    private int performBackoff(int tryCount) {
-        tryCount++;
+    private void performBackoff(int tryCount, String callingMethod) {
         try {
-            Thread.sleep(tryCount * RETRY_BACKOFF_INTERVAL);
-        }
-        catch (InterruptedException e2)
-        {
+            if (tryCount <= 3) {
+                Thread.sleep(tryCount * RETRY_BACKOFF_INTERVAL);
+            } else {
+                throw new MockEmployeeServiceException(callingMethod, "too many failures.");
+            }
+        } catch (InterruptedException e2) {
             // no op if sleep fails;
         }
-        return tryCount;
     }
 
-    private void setupErrorHandling(RestClient.ResponseSpec httpRequest) {
-        httpRequest.onStatus(HttpStatusCode::is4xxClientError, ((request, response) -> {
-                    throw new MockEmployeeServiceRequestException(
-                            response.getStatusCode().value(),
-                            request.getMethod().name(),
-                            request.getURI().toString());
-                }))
-                .onStatus(HttpStatusCode::is5xxServerError, ((request, response) -> {
-                    throw new MockEmployeeServiceRequestException(
-                            response.getStatusCode().value(),
-                            request.getMethod().name(),
-                            request.getURI().toString());
-                }));
+    private boolean errorHandlingRetryRequired(ResponseEntity<?> response, int tryCount, String callingMethod){
+        if (response.getStatusCode().is2xxSuccessful()) {
+            return false;
+        } else if (response.getStatusCode().is4xxClientError()) {
+           if (response.getStatusCode().isSameCodeAs(TOO_MANY_REQUESTS)) {
+               performBackoff(tryCount, callingMethod);
+               return true;
+           } else if (response.getStatusCode().isSameCodeAs(NOT_FOUND)){
+               return false;
+           } else {
+               log.error("MockEmployeeClient misconfigured");
+               throw new MockEmployeeServiceException(
+                       callingMethod,
+                       String.format("Client Returned response code [%s]", response.getStatusCode().toString()));
+           }
+        } else if (response.getStatusCode().is5xxServerError()) {
+            if (response.getStatusCode().isSameCodeAs(SERVICE_UNAVAILABLE)) {
+                performBackoff(tryCount, callingMethod);
+                return true;
+            }
+            throw new MockEmployeeServiceException(
+                    callingMethod,
+                    String.format(
+                            "Employee Data Server returned response code [%s]",
+                            response.getStatusCode().toString()));
+        }
+        return false;
     }
 
 
