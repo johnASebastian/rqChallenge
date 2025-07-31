@@ -4,10 +4,10 @@ import com.reliaquest.api.adapter.MockEmployeeServiceAdapter;
 import com.reliaquest.api.model.Employee;
 import com.reliaquest.api.model.EmployeeInput;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Comparator;
 import java.util.List;
 import static java.util.stream.Collectors.toList;
 
@@ -15,6 +15,7 @@ import static java.util.stream.Collectors.toList;
 @RequiredArgsConstructor
 public class EmployeeController implements IEmployeeController<Employee, EmployeeInput> {
 
+    @Autowired
     private final MockEmployeeServiceAdapter mockEmployeeService;
 
     @Override
